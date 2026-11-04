@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "prompt-stamp",
+  "description": "The prompt-stamp plugin for Claude Code.",
+  "owner": {
+    "name": "Hjalmar Hallin",
+    "url": "https://github.com/hjallehallin"
+  },
+  "plugins": [
+    {
+      "name": "prompt-stamp",
+      "description": "Tells Claude what time it is, how long you were away, and whether the repo changed while you were gone.",
+      "source": "./plugins/prompt-stamp",
+      "category": "productivity"
+    }
+  ]
+}

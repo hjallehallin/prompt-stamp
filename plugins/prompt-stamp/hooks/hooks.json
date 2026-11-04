@@ -1,0 +1,16 @@
+{
+  "description": "Adds a short time and git-state line to prompts after a gap, so the model knows time has passed and the repo may have changed.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/stamp.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
