@@ -5,7 +5,7 @@ A Claude Code plugin that tells Claude what time it is, how long you were away, 
 Claude only knows the date a session started. If you resume a session the next morning, or another agent merges a branch while this one sits idle, Claude keeps working from what it saw earlier. prompt-stamp adds one short line to your prompt when that is likely to matter:
 
 ```
-[stamp] 2026-11-05 Thu 08:12 +0100 · idle 15h40m · git: feature/hero @a1b2c3d, 4 modified, ↓3, worktree, HEAD moved since your last reply (was @9f8e7d6)
+[stamp] 2026-11-05 Thu 08:12 +0100 · idle 15h40m · git: feature/hero @a1b2c3d, 4 modified, 1 new, ↓3, fetched 2d1h ago, HEAD +2 commits since your last reply, last git action: pull: Fast-forward
 ```
 
 It stays quiet the rest of the time.
@@ -14,9 +14,10 @@ It stays quiet the rest of the time.
 
 - On the first prompt of a session
 - When you were idle for 15 minutes or more, counted from the end of Claude's last reply (time Claude spends working doesn't count)
-- When the branch or `HEAD` changed between Claude's last reply and your prompt, for example because another agent committed or merged. Commits and branch switches Claude makes itself don't count.
+- On the first prompt after `/compact`, `/clear` or resuming a session, when Claude's picture of the repo is most likely out of date
+- When git changed between Claude's last reply and your prompt: the branch, `HEAD`, the files in the working tree, or the remote branch being deleted. Changes Claude makes itself during a reply don't count.
 
-At session start, and again after `/compact`, it adds a short explanation of the stamp for Claude, so no CLAUDE.md changes are needed.
+At session start, and again after `/compact`, it adds a short explanation of the stamp for Claude, so no CLAUDE.md changes are needed. The explanation also tells Claude to fetch before pushing when the last fetch is old, and not to push a branch whose remote was deleted without asking you.
 
 ## What the line contains
 
@@ -24,12 +25,17 @@ At session start, and again after `/compact`, it adds a short explanation of the
 |---|---|
 | Date and time | Local time with UTC offset |
 | `session start` / `idle 2h05m` | Time since Claude's last reply in this session |
+| `resumed` / `after compact` / `after clear` | The session was just resumed, compacted or cleared |
 | `git: branch @sha` | Current branch and short commit (`detached` if no branch) |
-| `N modified` | Tracked files with uncommitted changes |
+| `N modified` / `N new` | Tracked files with uncommitted changes / untracked files |
 | `↑N` / `↓N` | Commits ahead of / behind the upstream, as of your last fetch |
+| `fetched 2d ago` | When the repo last fetched, so Claude can judge how stale ↑/↓ are |
+| `upstream gone` | The remote branch was deleted, usually after a merge. Pushing would recreate it |
 | `worktree` | The directory is a linked git worktree |
 | `REBASE IN PROGRESS` etc. | A rebase, merge, cherry-pick or revert is unfinished |
-| `branch changed` / `HEAD moved` | Git state changed since Claude's last reply |
+| `branch changed` | Another branch is checked out than at Claude's last reply |
+| `HEAD +N commits` / `moved back N commits` / `history rewritten` | How `HEAD` moved since Claude's last reply, with the last reflog entry (e.g. `pull: Fast-forward`) |
+| `working tree changed` | Files were edited, discarded or added since Claude's last reply, while `HEAD` stayed put |
 
 Git parts are left out when the working directory is not a git repo.
 
@@ -61,13 +67,15 @@ Change the gap threshold (in minutes) with an environment variable in `~/.claude
 Three hooks run [`stamp.sh`](plugins/prompt-stamp/scripts/stamp.sh):
 
 - `SessionStart` prints the explanation for Claude.
-- `Stop` records the time, branch and commit when Claude finishes a reply. It prints nothing.
+- `Stop` records the time, branch, commit, upstream status and a checksum of the uncommitted changes when Claude finishes a reply. It prints nothing.
 - `UserPromptSubmit` compares against that record and prints the stamp when something changed. Whatever it prints is added to Claude's context for that prompt.
 
-- It never fetches from a remote, so it is fast and works offline.
+- It only reads local git state. It never fetches, so it is fast and works offline.
+- It never runs scripts from the repo. A cloned repo could otherwise run code on every prompt without Claude Code's workspace trust check. Projects that need their own checks can add a project hook in `.claude/settings.json`, which is trust-gated.
 - It runs git with `GIT_OPTIONAL_LOCKS=0`, so it never holds the index lock while other agents commit.
 - It has a 5 second timeout and exits silently on any error, so it cannot block a prompt or a reply.
-- It keeps one tiny state file per session (time, branch, commit and repo path). Files older than 30 days are removed.
+- It keeps one tiny state file per session. Files older than 30 days are removed.
+- The working-tree check reads at most 2 MB of diff, and does not notice content edits to untracked or binary files.
 
 Nothing is sent anywhere except as part of your normal prompt to Claude. Note that this includes your branch name.
 
