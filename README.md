@@ -15,9 +15,9 @@ It stays quiet the rest of the time.
 - On the first prompt of a session
 - When you were idle for 15 minutes or more, counted from the end of Claude's last reply (time Claude spends working doesn't count)
 - On the first prompt after `/compact`, `/clear` or resuming a session, when Claude's picture of the repo is most likely out of date
-- When git changed between Claude's last reply and your prompt: the branch, `HEAD`, the files in the working tree, or the remote branch being deleted. Changes Claude makes itself during a reply don't count.
+- When git changed between Claude's last reply and your prompt: the branch, `HEAD`, the files in the working tree, or the remote branch being deleted (noticed after a `git fetch --prune`). Changes Claude makes itself during a reply don't count.
 
-At session start, and again after `/compact`, it adds a short explanation of the stamp for Claude, so no CLAUDE.md changes are needed. The explanation also tells Claude to fetch before pushing when the last fetch is old, and not to push a branch whose remote was deleted without asking you.
+Whenever a session starts, resumes, is cleared or is compacted, it adds a short explanation of the stamp for Claude, so no CLAUDE.md changes are needed. The explanation also tells Claude to fetch before pushing when the last fetch is old, and not to push a branch whose remote was deleted without asking you.
 
 ## What the line contains
 
@@ -29,11 +29,11 @@ At session start, and again after `/compact`, it adds a short explanation of the
 | `git: branch @sha` | Current branch and short commit (`detached` if no branch) |
 | `N modified` / `N new` | Tracked files with uncommitted changes / untracked files |
 | `↑N` / `↓N` | Commits ahead of / behind the upstream, as of your last fetch |
-| `fetched 2d ago` | When the repo last fetched, so Claude can judge how stale ↑/↓ are |
+| `fetched 2d ago` | When the repo last fetched, so Claude can judge how stale ↑/↓ are. Left out until the first fetch after a clone |
 | `upstream gone` | The remote branch was deleted, usually after a merge. Pushing would recreate it |
 | `worktree` | The directory is a linked git worktree |
 | `REBASE IN PROGRESS` etc. | A rebase, merge, cherry-pick or revert is unfinished |
-| `branch changed` | Another branch is checked out than at Claude's last reply |
+| `branch changed` | A different branch is checked out now than at Claude's last reply |
 | `HEAD +N commits` / `moved back N commits` / `history rewritten` | How `HEAD` moved since Claude's last reply, with the last reflog entry (e.g. `pull: Fast-forward`) |
 | `working tree changed` | Files were edited, discarded or added since Claude's last reply, while `HEAD` stayed put |
 
@@ -48,11 +48,13 @@ In Claude Code:
 /plugin install prompt-stamp@prompt-stamp
 ```
 
+To update later, run `/plugin marketplace update prompt-stamp` and start a new session.
+
 Requires `bash` and `git`. JSON is read with `jq` if installed, otherwise with `plutil`, which is built into macOS. On Linux, install `jq`; without either tool the hook does nothing.
 
 ## Settings
 
-Change the gap threshold (in minutes) with an environment variable in `~/.claude/settings.json`:
+The idle threshold is 15 minutes. Change it with an environment variable in `~/.claude/settings.json`:
 
 ```json
 {
@@ -68,16 +70,18 @@ Three hooks run [`stamp.sh`](plugins/prompt-stamp/scripts/stamp.sh):
 
 - `SessionStart` prints the explanation for Claude.
 - `Stop` records the time, branch, commit, upstream status and a checksum of the uncommitted changes when Claude finishes a reply. It prints nothing.
-- `UserPromptSubmit` compares against that record and prints the stamp when something changed. Whatever it prints is added to Claude's context for that prompt.
+- `UserPromptSubmit` compares against that record and prints the stamp when one of the conditions under [When it prints](#when-it-prints) is met. Whatever it prints is added to Claude's context for that prompt.
+
+Design choices:
 
 - It only reads local git state. It never fetches, so it is fast and works offline.
 - It never runs scripts from the repo. A cloned repo could otherwise run code on every prompt without Claude Code's workspace trust check. Projects that need their own checks can add a project hook in `.claude/settings.json`, which is trust-gated.
 - It runs git with `GIT_OPTIONAL_LOCKS=0`, so it never holds the index lock while other agents commit.
 - It has a 5 second timeout and exits silently on any error, so it cannot block a prompt or a reply.
-- It keeps one tiny state file per session. Files older than 30 days are removed.
+- It keeps one tiny state file per session in the plugin's data folder (or `~/.claude/state/prompt-stamp/`). Files older than 30 days are removed.
 - The working-tree check reads at most 2 MB of diff, and does not notice content edits to untracked or binary files.
 
-Nothing is sent anywhere except as part of your normal prompt to Claude. Note that this includes your branch name.
+Nothing is sent anywhere except as part of your normal prompt to Claude. Note that this includes your branch name and the latest reflog entry, which can contain a commit message.
 
 ## Credit
 
