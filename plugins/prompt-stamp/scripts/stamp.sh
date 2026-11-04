@@ -1,51 +1,92 @@
 #!/usr/bin/env bash
-# prompt-stamp: UserPromptSubmit hook that tells the model what time it is,
-# how long it has been since the last prompt, and the git state of the cwd.
-# Prints only on session start, after a gap, or when HEAD moved; otherwise silent.
-# Every failure path exits 0 with no output so a prompt is never blocked.
+# prompt-stamp: tells the model what time it is, how long the user was idle,
+# and whether git state changed between turns.
+#
+#   stamp.sh start   SessionStart: print the legend (also after /compact).
+#   stamp.sh prompt  UserPromptSubmit: print a stamp on first prompt, after an
+#                    idle gap, or when the branch/HEAD changed between turns.
+#   stamp.sh stop    Stop: record time and git state when Claude finishes, so
+#                    Claude's own work and commits don't count as changes.
+#
+# Every failure path exits 0 with no output so a prompt or stop is never blocked.
 set -u
 export GIT_OPTIONAL_LOCKS=0   # never take index.lock; other agents may be committing
 
-command -v jq >/dev/null 2>&1 || exit 0
+mode=${1:-prompt}
 
-GAP_MIN=${PROMPT_STAMP_GAP_MIN:-15}
-case "$GAP_MIN" in ''|*[!0-9]*) GAP_MIN=15 ;; esac
+if [ "$mode" = start ]; then
+  echo "(prompt-stamp: some prompts start with a [stamp] line added by a hook, not typed by the user. It shows local time, how long the user was idle since your last reply, and git state of the working directory. Treat it as background and don't mention it unless it matters. If idle time is over about an hour, or it says the branch or HEAD changed, re-check git status/log and anything else you would otherwise take from earlier in this conversation before acting on it. ↑/↓ are against the last fetch and may be stale.)"
+  exit 0
+fi
 
 input=$(cat)
-sid=$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null)
-cwd=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)
+
+# jq when available, plutil (built into macOS) otherwise.
+json_get() {
+  if command -v jq >/dev/null 2>&1; then
+    jq -r --arg k "$1" '.[$k] // empty' <<<"$input" 2>/dev/null
+  elif command -v plutil >/dev/null 2>&1; then
+    plutil -extract "$1" raw -o - - <<<"$input" 2>/dev/null
+  fi
+}
+
+sid=$(json_get session_id)
+cwd=$(json_get cwd)
 [ -n "$sid" ] || exit 0
 sid=${sid//[^A-Za-z0-9_-]/_}
 
 state_dir=${CLAUDE_PLUGIN_DATA:-$HOME/.claude/state/prompt-stamp}
 mkdir -p "$state_dir" 2>/dev/null || exit 0
 state="$state_dir/$sid"
-
 now=$(date +%s)
-last=0; last_head=""
+
+in_git=0; head="-"; branch="-"; top="-"
+if [ -n "$cwd" ] && cd "$cwd" 2>/dev/null && top=$(git rev-parse --show-toplevel 2>/dev/null); then
+  in_git=1
+  head=$(git rev-parse --short HEAD 2>/dev/null) || head="-"   # no commits yet
+  branch=$(git symbolic-ref --short -q HEAD) || branch="detached"
+else
+  top="-"
+fi
+
+# State line: <time> <head> <branch> <toplevel>. "-" marks empty; toplevel is
+# last because it may contain spaces and `read` gives the remainder to it.
+save_state() { printf '%s %s %s %s\n' "$now" "$head" "$branch" "$top" > "$state" 2>/dev/null; }
+
+if [ "$mode" = stop ]; then
+  save_state
+  exit 0
+fi
+
+last=0; last_head="-"; last_branch="-"; last_top="-"
 if [ -f "$state" ]; then
-  read -r last last_head < "$state" || true
+  read -r last last_head last_branch last_top < "$state" || true
   case "$last" in ''|*[!0-9]*) last=0 ;; esac
 else
   find "$state_dir" -type f -mtime +30 -delete 2>/dev/null
 fi
+# Fallback in case Stop never fires (e.g. the reply was interrupted).
+save_state
 
-in_git=0; head=""
-if [ -n "$cwd" ] && cd "$cwd" 2>/dev/null && git rev-parse --git-dir >/dev/null 2>&1; then
-  in_git=1
-  head=$(git rev-parse --short HEAD 2>/dev/null)   # empty in a repo with no commits
+GAP_MIN=${PROMPT_STAMP_GAP_MIN:-15}
+case "$GAP_MIN" in ''|*[!0-9]*) GAP_MIN=15 ;; esac
+idle=$(( now - last ))
+
+# Only compare git state within the same repo; a cd elsewhere isn't a change.
+changed=""
+if [ "$in_git" -eq 1 ] && [ "$top" = "$last_top" ]; then
+  if [ "$branch" != "$last_branch" ]; then
+    changed="branch changed since your last reply (was $last_branch @$last_head)"
+  elif [ "$head" != "$last_head" ] && [ "$last_head" != "-" ]; then
+    changed="HEAD moved since your last reply (was @$last_head)"
+  fi
 fi
-printf '%s %s\n' "$now" "$head" > "$state" 2>/dev/null
 
-gap=$(( now - last ))
-moved=0
-[ -n "$last_head" ] && [ -n "$head" ] && [ "$head" != "$last_head" ] && moved=1
-
-if [ "$last" -ne 0 ] && [ "$gap" -lt $(( GAP_MIN * 60 )) ] && [ "$moved" -eq 0 ]; then
+if [ "$last" -ne 0 ] && [ "$idle" -lt $(( GAP_MIN * 60 )) ] && [ -z "$changed" ]; then
   exit 0
 fi
 
-fmt_gap() {
+fmt_dur() {
   local d=$(( $1 / 86400 )) h=$(( $1 % 86400 / 3600 )) m=$(( $1 % 3600 / 60 ))
   if [ "$d" -gt 0 ]; then echo "${d}d${h}h"
   elif [ "$h" -gt 0 ]; then echo "${h}h${m}m"
@@ -54,12 +95,11 @@ fmt_gap() {
 }
 
 out="[stamp] $(date '+%Y-%m-%d %a %H:%M %z')"
-if [ "$last" -eq 0 ]; then out+=" · session start"; else out+=" · gap $(fmt_gap "$gap")"; fi
+if [ "$last" -eq 0 ]; then out+=" · session start"; else out+=" · idle $(fmt_dur "$idle")"; fi
 
 if [ "$in_git" -eq 1 ]; then
-  branch=$(git symbolic-ref --short -q HEAD || echo "detached")
   g="git: $branch"
-  [ -n "$head" ] && g+=" @$head"
+  [ "$head" != "-" ] && g+=" @$head"
   modified=$(git status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d ' ')
   [ "${modified:-0}" -gt 0 ] && g+=", $modified modified"
   # Counts are against the last fetch; fetching here would be slow and hit the network.
@@ -75,14 +115,9 @@ if [ "$in_git" -eq 1 ]; then
       break
     fi
   done
-  [ "$moved" -eq 1 ] && g+=", HEAD moved since last prompt (was @$last_head)"
+  [ -n "$changed" ] && g+=", $changed"
   out+=" · $g"
 fi
 
 echo "$out"
-
-if [ "$last" -eq 0 ]; then
-  echo "(The [stamp] line is added by a hook, not typed by the user: local time, time since the previous prompt, and git state of the working directory. Treat it as background and don't mention it unless it matters. If the gap is over about an hour, or HEAD moved, re-check git status/log and anything else you would otherwise take from earlier in this conversation before acting on it. ↑/↓ are against the last fetch and may be stale.)"
-fi
-
 exit 0

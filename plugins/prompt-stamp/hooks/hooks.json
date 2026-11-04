@@ -1,12 +1,34 @@
 {
-  "description": "Adds a short time and git-state line to prompts after a gap, so the model knows time has passed and the repo may have changed.",
+  "description": "Adds a short time and git-state line to prompts after an idle gap, so the model knows time has passed and the repo may have changed.",
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/stamp.sh\" start",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/stamp.sh\"",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/stamp.sh\" prompt",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/stamp.sh\" stop",
             "timeout": 5
           }
         ]
