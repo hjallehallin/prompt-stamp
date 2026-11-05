@@ -8,6 +8,10 @@
 #                    idle gap, after resume/compact/clear, or when git changed.
 #   stamp.sh stop    Stop: record time and git state when Claude finishes, so
 #                    Claude's own work doesn't count as a change.
+#   stamp.sh tool    PreToolUse: note that a reply is still running. A prompt
+#                    that arrives mid-reply (a background task's notification,
+#                    or a message the user queues) fires UserPromptSubmit with
+#                    no Stop before it, and must not report Claude's own work.
 #
 # Local git only: never fetches, never runs repo-provided code.
 # Every failure path exits 0 with no output so a prompt or stop is never blocked.
@@ -33,7 +37,6 @@ json_get() {
 [ "$mode" = start ] && legend
 
 sid=$(json_get session_id)
-cwd=$(json_get cwd)
 [ -n "$sid" ] || exit 0
 sid=${sid//[^A-Za-z0-9_-]/_}
 
@@ -41,6 +44,9 @@ state_dir=${CLAUDE_PLUGIN_DATA:-$HOME/.claude/state/prompt-stamp}
 mkdir -p "$state_dir" 2>/dev/null || exit 0
 state="$state_dir/$sid"
 marker="$state.source"
+# Present while a reply is running: written by a prompt, refreshed by every
+# tool call, removed by Stop. Holds the time Claude was last seen working.
+turn="$state.turn"
 
 if [ "$mode" = start ]; then
   src=$(json_get source)
@@ -49,6 +55,17 @@ if [ "$mode" = start ]; then
 fi
 
 now=$(date +%s)
+
+# Cheap on purpose: it runs before every tool call. No git, and nothing at all
+# outside a reply.
+if [ "$mode" = tool ]; then
+  [ -f "$turn" ] && echo "$now" > "$turn" 2>/dev/null
+  exit 0
+fi
+
+GAP_MIN=${PROMPT_STAMP_GAP_MIN:-15}
+case "$GAP_MIN" in ''|*[!0-9]*) GAP_MIN=15 ;; esac
+cwd=$(json_get cwd)
 
 in_git=0; head="-"; branch="-"; top="-"; fp="-"; porc=""; upstream=""; track=""; upgone=0
 if [ -n "$cwd" ] && cd "$cwd" 2>/dev/null && top=$(git rev-parse --show-toplevel 2>/dev/null); then
@@ -76,6 +93,7 @@ save_state() { printf '%s %s %s %s %s %s\n' "$now" "$head" "$branch" "$fp" "$upg
 
 if [ "$mode" = stop ]; then
   save_state
+  rm -f "$turn"
   exit 0
 fi
 
@@ -90,8 +108,30 @@ src=""
 if [ -f "$marker" ]; then
   src=$(cat "$marker" 2>/dev/null); rm -f "$marker"
 fi
-# Fallback in case Stop never fires (e.g. the reply was interrupted).
+
+# Is a reply still running? Only if Claude was seen working within the idle
+# threshold: an interrupted reply never fires Stop, and its turn file then goes
+# stale like any other idle gap, counted from Claude's last tool call.
+midturn=0
+if [ -f "$turn" ]; then
+  active=$(cat "$turn" 2>/dev/null)
+  case "$active" in ''|*[!0-9]*) active=0 ;; esac
+  if [ $(( now - active )) -lt $(( GAP_MIN * 60 )) ]; then
+    midturn=1
+  elif [ "$active" -gt "$last" ]; then
+    last=$active
+  fi
+fi
+echo "$now" > "$turn" 2>/dev/null
+
+# Fallback in case Stop never fires (e.g. the reply was interrupted). Mid-reply
+# it also moves the baseline past Claude's own work so far.
 save_state
+
+# Mid-reply, what changed is Claude's own work and no one has been idle: stay
+# quiet, unless a compact or clear just happened, which still deserves the
+# time and git state.
+[ "$midturn" -eq 1 ] && [ -z "$src" ] && exit 0
 
 fmt_dur() {
   local d=$(( $1 / 86400 )) h=$(( $1 % 86400 / 3600 )) m=$(( $1 % 3600 / 60 ))
@@ -105,7 +145,7 @@ fmt_dur() {
 plural() { if [ "$1" -eq 1 ]; then echo "1 $2"; else echo "$1 ${2}s"; fi; }
 
 changed=""; force=0
-if [ "$in_git" -eq 1 ] && [ "$top" = "$last_top" ]; then
+if [ "$midturn" -eq 0 ] && [ "$in_git" -eq 1 ] && [ "$top" = "$last_top" ]; then
   if [ "$branch" != "$last_branch" ]; then
     changed="branch changed since your last reply (was $last_branch @$last_head)"
   elif [ "$head" != "$last_head" ] && [ "$last_head" != "-" ]; then
@@ -125,8 +165,6 @@ if [ "$in_git" -eq 1 ] && [ "$top" = "$last_top" ]; then
   [ "$branch" = "$last_branch" ] && [ "$upgone" = 1 ] && [ "$last_upgone" != 1 ] && force=1
 fi
 
-GAP_MIN=${PROMPT_STAMP_GAP_MIN:-15}
-case "$GAP_MIN" in ''|*[!0-9]*) GAP_MIN=15 ;; esac
 idle=$(( now - last ))
 
 if [ "$last" -ne 0 ] && [ -z "$src" ] && [ "$idle" -lt $(( GAP_MIN * 60 )) ] && [ -z "$changed" ] && [ "$force" -eq 0 ]; then
@@ -134,7 +172,8 @@ if [ "$last" -ne 0 ] && [ -z "$src" ] && [ "$idle" -lt $(( GAP_MIN * 60 )) ] && 
 fi
 
 out="[stamp] $(date '+%Y-%m-%d %a %H:%M %z')"
-if [ "$last" -eq 0 ]; then out+=" · session start"; else out+=" · idle $(fmt_dur "$idle")"; fi
+if [ "$last" -eq 0 ]; then out+=" · session start"
+elif [ "$midturn" -eq 0 ]; then out+=" · idle $(fmt_dur "$idle")"; fi
 case "$src" in
   resume)  out+=" · resumed" ;;
   compact) out+=" · after compact" ;;
