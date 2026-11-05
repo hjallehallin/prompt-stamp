@@ -65,6 +65,11 @@ fi
 
 GAP_MIN=${PROMPT_STAMP_GAP_MIN:-15}
 case "$GAP_MIN" in ''|*[!0-9]*) GAP_MIN=15 ;; esac
+# How long a reply may go without a tool call and still count as running. At
+# least 15 minutes whatever the idle threshold: a single slow command (a build,
+# a test run) must not make a reply look interrupted, or a mid-reply prompt
+# reports Claude's own work again.
+TURN_MIN=$(( GAP_MIN > 15 ? GAP_MIN : 15 ))
 cwd=$(json_get cwd)
 
 in_git=0; head="-"; branch="-"; top="-"; fp="-"; porc=""; upstream=""; track=""; upgone=0
@@ -109,14 +114,14 @@ if [ -f "$marker" ]; then
   src=$(cat "$marker" 2>/dev/null); rm -f "$marker"
 fi
 
-# Is a reply still running? Only if Claude was seen working within the idle
-# threshold: an interrupted reply never fires Stop, and its turn file then goes
-# stale like any other idle gap, counted from Claude's last tool call.
+# Is a reply still running? Only if Claude was seen working within TURN_MIN:
+# an interrupted reply never fires Stop, and its turn file then goes stale,
+# with idle time counted from Claude's last tool call.
 midturn=0
 if [ -f "$turn" ]; then
   active=$(cat "$turn" 2>/dev/null)
   case "$active" in ''|*[!0-9]*) active=0 ;; esac
-  if [ $(( now - active )) -lt $(( GAP_MIN * 60 )) ]; then
+  if [ $(( now - active )) -lt $(( TURN_MIN * 60 )) ]; then
     midturn=1
   elif [ "$active" -gt "$last" ]; then
     last=$active
