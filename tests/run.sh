@@ -101,6 +101,14 @@ commit "Claude's commit in a long reply"
 out=$(hook prompt longturn "$repo")
 expect_empty "a long reply that is still using tools stays one turn" "$out"
 
+export PROMPT_STAMP_GAP_MIN=2
+hook prompt slowtool "$repo" >/dev/null; hook tool slowtool "$repo"
+backdate slowtool 180             # one command ran 3 minutes, past the idle threshold
+commit "Claude's commit during a slow command"
+out=$(hook prompt slowtool "$repo")
+expect_empty "a slow command doesn't end the reply early with a short idle threshold" "$out"
+unset PROMPT_STAMP_GAP_MIN
+
 hook prompt interrupted "$repo" >/dev/null; hook tool interrupted "$repo"
 backdate interrupted 7200         # interrupted, so no Stop; back two hours later
 out=$(hook prompt interrupted "$repo")

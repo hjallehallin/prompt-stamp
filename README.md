@@ -17,7 +17,7 @@ It stays quiet the rest of the time.
 - On the first prompt after `/compact`, `/clear` or resuming a session, when Claude's picture of the repo is most likely out of date
 - When git changed between Claude's last reply and your prompt: the branch, `HEAD`, the files in the working tree, or the remote branch being deleted (noticed after a `git fetch --prune`). Changes Claude makes itself during a reply don't count.
 
-A prompt that arrives while Claude is still replying (a background task's notification, or a message you queue) gets no stamp, because whatever changed since the reply began is Claude's own work. The exception is a compact or clear, which still gets the time and git state. If you interrupt a reply and come back after more than the idle threshold, the next prompt is stamped as usual, with idle time counted from Claude's last tool call.
+A prompt that arrives while Claude is still replying (a background task's notification, or a message you queue) gets no stamp, because whatever changed since the reply began is Claude's own work. The exception is a compact or clear, which still gets the time and git state. If you interrupt a reply and come back after more than 15 minutes (or the idle threshold, if you set it higher), the next prompt is stamped as usual, with idle time counted from Claude's last tool call.
 
 Whenever a session starts, resumes, is cleared or is compacted, it adds a short explanation of the stamp for Claude, so no CLAUDE.md changes are needed. The explanation also tells Claude to fetch before pushing when the last fetch is old, and not to push a branch whose remote was deleted without asking you.
 
