@@ -17,6 +17,8 @@ It stays quiet the rest of the time.
 - On the first prompt after `/compact`, `/clear` or resuming a session, when Claude's picture of the repo is most likely out of date
 - When git changed between Claude's last reply and your prompt: the branch, `HEAD`, the files in the working tree, or the remote branch being deleted (noticed after a `git fetch --prune`). Changes Claude makes itself during a reply don't count.
 
+A prompt that arrives while Claude is still replying (a background task's notification, or a message you queue) gets no stamp, because whatever changed since the reply began is Claude's own work. The exception is a compact or clear, which still gets the time and git state. If you interrupt a reply and come back after more than the idle threshold, the next prompt is stamped as usual, with idle time counted from Claude's last tool call.
+
 Whenever a session starts, resumes, is cleared or is compacted, it adds a short explanation of the stamp for Claude, so no CLAUDE.md changes are needed. The explanation also tells Claude to fetch before pushing when the last fetch is old, and not to push a branch whose remote was deleted without asking you.
 
 ## What the line contains
@@ -66,11 +68,12 @@ The idle threshold is 15 minutes. Change it with an environment variable in `~/.
 
 ## How it works
 
-Three hooks run [`stamp.sh`](plugins/prompt-stamp/scripts/stamp.sh):
+Four hooks run [`stamp.sh`](plugins/prompt-stamp/scripts/stamp.sh):
 
 - `SessionStart` prints the explanation for Claude.
 - `Stop` records the time, branch, commit, upstream status and a checksum of the uncommitted changes when Claude finishes a reply. It prints nothing.
-- `UserPromptSubmit` compares against that record and prints the stamp when one of the conditions under [When it prints](#when-it-prints) is met. Whatever it prints is added to Claude's context for that prompt.
+- `UserPromptSubmit` compares against that record and prints the stamp when one of the conditions under [When it prints](#when-it-prints) is met. Whatever it prints is added to Claude's context for that prompt. It also marks a reply as running, until `Stop` clears it.
+- `PreToolUse` records when Claude was last seen working, so a long reply still counts as running. It prints nothing, runs no git, and does nothing between replies.
 
 Design choices:
 
@@ -78,8 +81,11 @@ Design choices:
 - It never runs scripts from the repo. A cloned repo could otherwise run code on every prompt without Claude Code's workspace trust check. Projects that need their own checks can add a project hook in `.claude/settings.json`, which is trust-gated.
 - It runs git with `GIT_OPTIONAL_LOCKS=0`, so it never holds the index lock while other agents commit.
 - It has a 5 second timeout and exits silently on any error, so it cannot block a prompt or a reply.
-- It keeps one tiny state file per session in the plugin's data folder (or `~/.claude/state/prompt-stamp/`). Files older than 30 days are removed.
+- It keeps a few tiny state files per session in the plugin's data folder (or `~/.claude/state/prompt-stamp/`). Files older than 30 days are removed.
 - The working-tree check reads at most 2 MB of diff, and does not notice content edits to untracked or binary files.
+- A command Claude leaves running in the background can still change the repo after the reply ends. The next prompt then reports that change as if it were yours.
+
+`bash tests/run.sh` runs the tests, against throwaway repos and state.
 
 Nothing is sent anywhere except as part of your normal prompt to Claude. Note that this includes your branch name and the latest reflog entry, which can contain a commit message.
 
