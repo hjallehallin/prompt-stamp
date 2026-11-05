@@ -165,7 +165,11 @@ if [ "$in_git" -eq 1 ]; then
       g+=", fetched $(fmt_dur $(( now - fetched ))) ago"
     fi
   fi
-  [ "$(git rev-parse --git-dir)" != "$(git rev-parse --git-common-dir)" ] && g+=", worktree"
+  # Compared as resolved paths: from a subdirectory, --git-dir comes back
+  # absolute and --git-common-dir relative, so the strings never match.
+  gitdir=$(cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd -P)
+  commondir=$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)
+  [ -n "$gitdir" ] && [ "$gitdir" != "$commondir" ] && g+=", worktree"
   for op in rebase-merge:REBASE rebase-apply:REBASE MERGE_HEAD:MERGE CHERRY_PICK_HEAD:CHERRY-PICK REVERT_HEAD:REVERT; do
     if [ -e "$(git rev-parse --git-path "${op%%:*}")" ]; then
       g+=", ${op##*:} IN PROGRESS"
