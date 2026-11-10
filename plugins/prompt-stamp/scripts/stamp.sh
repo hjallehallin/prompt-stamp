@@ -34,7 +34,40 @@ json_get() {
   fi
 }
 
-[ "$mode" = start ] && legend
+# Repos up to $1 levels below the current directory, as "./path/" lines. Skips
+# hidden folders, node_modules, and repos nested in another repo.
+list_repo_dirs() {
+  local d prev=""
+  find . -mindepth 1 -maxdepth $(( $1 + 1 )) \
+    \( -name .git -print -prune \) -o \( \( -name node_modules -o -name '.?*' \) -prune \) 2>/dev/null |
+    sed 's|\.git$||' | LC_ALL=C sort |
+    while IFS= read -r d; do
+      # Sorted with their trailing slash, nested repos come right after the
+      # repo they are in.
+      if [ -n "$prev" ] && [ "${d#"$prev"}" != "$d" ]; then continue; fi
+      prev=$d
+      echo "$d"
+    done
+}
+
+# Outside a repo, with repos below and PROMPT_STAMP_REPO_DEPTH never set, tells
+# Claude about the setting so it can suggest it. Setting it to 0 silences this.
+repo_hint() (
+  [ -z "${PROMPT_STAMP_REPO_DEPTH+set}" ] || exit 0
+  dir=$(json_get cwd)
+  [ -n "$dir" ] && cd "$dir" 2>/dev/null || exit 0
+  git rev-parse --show-toplevel >/dev/null 2>&1 && exit 0
+  found=$(list_repo_dirs 2)
+  [ -n "$found" ] || exit 0
+  n=$(grep -c . <<<"$found")
+  depth=1
+  grep -q '^\./[^/]*/[^/]*/$' <<<"$found" && depth=2
+  echo "(prompt-stamp: the working directory is not a git repo, so the stamp shows no git state, but it has $(plural "$n" repo) up to $depth level(s) below. If the user works across them, mention once that setting PROMPT_STAMP_REPO_DEPTH to $depth under \"env\" in ~/.claude/settings.json makes the stamp report commits, checkouts and pulls in them, or 0 to stop this note. Don't change the setting without asking.)"
+)
+
+plural() { if [ "$1" -eq 1 ]; then echo "1 $2"; else echo "$1 ${2}s"; fi; }
+
+[ "$mode" = start ] && { legend; repo_hint; }
 
 sid=$(json_get session_id)
 [ -n "$sid" ] || exit 0
@@ -70,10 +103,17 @@ case "$GAP_MIN" in ''|*[!0-9]*) GAP_MIN=15 ;; esac
 # a test run) must not make a reply look interrupted, or a mid-reply prompt
 # reports Claude's own work again.
 TURN_MIN=$(( GAP_MIN > 15 ? GAP_MIN : 15 ))
+# Opt-in: outside a repo, watch the repos up to this many levels below.
+REPO_DEPTH=${PROMPT_STAMP_REPO_DEPTH:-0}
+case "$REPO_DEPTH" in ''|*[!0-9]*) REPO_DEPTH=0 ;; esac
+[ "$REPO_DEPTH" -gt 3 ] && REPO_DEPTH=3   # deeper mostly walks source trees
+repos="$state.repos"
 cwd=$(json_get cwd)
 
+cwd_ok=0
+[ -n "$cwd" ] && cd "$cwd" 2>/dev/null && cwd_ok=1
 in_git=0; head="-"; branch="-"; top="-"; fp="-"; porc=""; upstream=""; track=""; upgone=0
-if [ -n "$cwd" ] && cd "$cwd" 2>/dev/null && top=$(git rev-parse --show-toplevel 2>/dev/null); then
+if [ "$cwd_ok" -eq 1 ] && top=$(git rev-parse --show-toplevel 2>/dev/null); then
   in_git=1
   head=$(git rev-parse --short HEAD 2>/dev/null) || head="-"   # no commits yet
   branch=$(git symbolic-ref --short -q HEAD) || branch="detached"
@@ -96,8 +136,72 @@ fi
 # gives it the remainder.
 save_state() { printf '%s %s %s %s %s %s\n' "$now" "$head" "$branch" "$fp" "$upgone" "$top" > "$state" 2>/dev/null; }
 
+# HEAD reflog of the repo at $1 (a path ending in /). In a linked worktree or
+# submodule, .git is a file pointing at the real git dir.
+reflog_of() {
+  local g="$1.git"
+  if [ -f "$g" ]; then
+    g=$(sed -n 's/^gitdir: //p' "$g" 2>/dev/null)
+    case "$g" in /*) ;; *) g="$1$g" ;; esac
+  fi
+  echo "$g/logs/HEAD"
+}
+
+# Lists the repos up to REPO_DEPTH levels below the working directory, one
+# "<size> <path>" line each under a "cwd <dir>" header. The size is the repo's
+# HEAD reflog, which every commit, checkout, reset, merge and rebase appends
+# to, so comparing sizes finds git activity without running git in each repo.
+# Uncommitted edits don't touch the reflog and go unnoticed.
+scan_repos() {
+  local d log size
+  echo "cwd $cwd"
+  list_repo_dirs "$REPO_DEPTH" | while IFS= read -r d; do
+      # Skips a subshell in the common case; this runs once per repo.
+      if [ -d "$d.git" ]; then log="$d.git/logs/HEAD"; else log=$(reflog_of "$d"); fi
+      size=0
+      [ -f "$log" ] && size=$(wc -c < "$log") && size=${size//[!0-9]/}
+      echo "${size:-0} ${d#./}"
+    done
+}
+
+# Rescans the repos below and saves the result. With $1 = report, sets
+# `elsewhere` to the repos whose reflog grew since the last save, each with its
+# number of git actions and the latest one.
+elsewhere=""
+update_repos() {
+  if [ "$in_git" -eq 1 ] || [ "$REPO_DEPTH" -eq 0 ] || [ "$cwd_ok" -eq 0 ]; then
+    rm -f "$repos"
+    return
+  fi
+  local now_repos grown old p log lines count msg item n=0 list=""
+  now_repos=$(scan_repos)
+  # A baseline taken from another directory says nothing about this one.
+  if [ "${1:-}" = report ] && [ "$(head -n 1 "$repos" 2>/dev/null)" = "cwd $cwd" ]; then
+    grown=$(awk 'FNR == 1 { next }
+      { p = substr($0, index($0, " ") + 1) }
+      NR == FNR { old[p] = $1; next }
+      (p in old) && $1 + 0 > old[p] + 0 { print old[p], p }' "$repos" - <<<"$now_repos")
+    while read -r old p; do
+      [ -n "$old" ] || continue
+      n=$(( n + 1 ))
+      [ "$n" -gt 5 ] && continue
+      log=$(reflog_of "./$p")
+      lines=$(tail -c +$(( old + 1 )) "$log" 2>/dev/null)
+      count=$(grep -c . <<<"$lines")
+      msg=$(tail -n 1 <<<"$lines" | cut -f 2- | cut -c 1-50)
+      if [ "$count" -le 1 ]; then item="${p%/} ($msg)"
+      else item="${p%/} ($count git actions, last: $msg)"; fi
+      list+="${list:+, }$item"
+    done <<<"$grown"
+    [ "$n" -gt 5 ] && list+=", +$(( n - 5 )) more"
+    [ -n "$list" ] && elsewhere="repos below changed since your last reply: $list"
+  fi
+  printf '%s\n' "$now_repos" > "$repos" 2>/dev/null
+}
+
 if [ "$mode" = stop ]; then
   save_state
+  update_repos
   rm -f "$turn"
   exit 0
 fi
@@ -132,6 +236,7 @@ echo "$now" > "$turn" 2>/dev/null
 # Fallback in case Stop never fires (e.g. the reply was interrupted). Mid-reply
 # it also moves the baseline past Claude's own work so far.
 save_state
+if [ "$midturn" -eq 1 ]; then update_repos; else update_repos report; fi
 
 # Mid-reply, what changed is Claude's own work and no one has been idle: stay
 # quiet, unless a compact or clear just happened, which still deserves the
@@ -147,8 +252,6 @@ fmt_dur() {
 }
 
 # Only compare git state within the same repo; a cd elsewhere isn't a change.
-plural() { if [ "$1" -eq 1 ]; then echo "1 $2"; else echo "$1 ${2}s"; fi; }
-
 changed=""; force=0
 if [ "$midturn" -eq 0 ] && [ "$in_git" -eq 1 ] && [ "$top" = "$last_top" ]; then
   if [ "$branch" != "$last_branch" ]; then
@@ -172,7 +275,7 @@ fi
 
 idle=$(( now - last ))
 
-if [ "$last" -ne 0 ] && [ -z "$src" ] && [ "$idle" -lt $(( GAP_MIN * 60 )) ] && [ -z "$changed" ] && [ "$force" -eq 0 ]; then
+if [ "$last" -ne 0 ] && [ -z "$src" ] && [ "$idle" -lt $(( GAP_MIN * 60 )) ] && [ -z "$changed" ] && [ -z "$elsewhere" ] && [ "$force" -eq 0 ]; then
   exit 0
 fi
 
@@ -223,6 +326,7 @@ if [ "$in_git" -eq 1 ]; then
   [ -n "$changed" ] && g+=", $changed"
   out+=" · $g"
 fi
+[ -n "$elsewhere" ] && out+=" · $elsewhere"
 
 echo "$out"
 exit 0
