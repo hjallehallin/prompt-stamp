@@ -122,6 +122,66 @@ expect_has "a compact mid-reply still stamps" "$out" "after compact"
 expect_lacks "...without calling Claude's commit a change" "$out" "since your last reply"
 expect_lacks "...or counting the reply as idle time" "$out" "idle"
 
+# --- repos below a folder that isn't a repo (PROMPT_STAMP_REPO_DEPTH) -------------
+
+top="$tmp/projects"
+mkrepo() { git init -q -b main "$top/$1" && git -C "$top/$1" commit -q --allow-empty -m init; }
+mkrepo solo; mkrepo client/proj; mkrepo client/proj/inner; mkrepo deep/a/b; mkrepo .hidden
+mkdir -p "$top/node_modules"; git init -q -b main "$top/node_modules/pkg"
+work() { git -C "$top/$1" commit -q --allow-empty -m "$2"; }
+
+out=$(hook start hint "$top" '"source":"startup"')
+expect_has "unset, the session start hints at the setting with the depth that fits" "$out" "PROMPT_STAMP_REPO_DEPTH to 2"
+expect_has "...counting outer repos within that depth only" "$out" "has 2 repos up to 2 level(s)"
+out=$(PROMPT_STAMP_REPO_DEPTH=0 hook start hint "$top" '"source":"startup"')
+expect_lacks "set to 0, there is no hint" "$out" "PROMPT_STAMP_REPO_DEPTH"
+out=$(PROMPT_STAMP_REPO_DEPTH=2 hook start hint "$top" '"source":"startup"')
+expect_lacks "already set, there is no hint" "$out" "PROMPT_STAMP_REPO_DEPTH"
+out=$(hook start hint "$top/solo" '"source":"startup"')
+expect_lacks "inside a repo, there is no hint" "$out" "PROMPT_STAMP_REPO_DEPTH"
+mkdir -p "$tmp/flat/one"; git init -q "$tmp/flat/one"
+out=$(hook start hint "$tmp/flat" '"source":"startup"')
+expect_has "with repos one level down only, it suggests 1" "$out" "has 1 repo up to 1 level(s) below"
+
+hook prompt off "$top" >/dev/null; hook stop off "$top"
+work solo "while away"
+out=$(hook prompt off "$top")
+expect_empty "repos below are ignored unless the setting is on" "$out"
+
+export PROMPT_STAMP_REPO_DEPTH=2
+hook prompt below "$top" >/dev/null; hook tool below "$top"
+work solo "Claude's own commit"
+hook stop below "$top"
+out=$(hook prompt below "$top")
+expect_empty "Claude's own commits below are not reported" "$out"
+hook stop below "$top"
+
+work solo "the user's commit"
+work client/proj "first"; work client/proj "second"
+work client/proj/inner "nested"; work deep/a/b "too deep"; work .hidden "hidden"
+out=$(hook prompt below "$top")
+expect_has "a commit in a repo one level down is reported" "$out" "solo (commit: the user's commit)"
+expect_has "two levels down, with a count" "$out" "client/proj (2 git actions, last: commit: second)"
+expect_lacks "a repo nested in a repo is not watched on its own" "$out" "inner"
+expect_lacks "a repo deeper than the setting is not watched" "$out" "deep/"
+expect_lacks "hidden folders are skipped" "$out" "hidden"
+expect_lacks "node_modules is skipped" "$out" "node_modules"
+hook stop below "$top"
+
+hook prompt below "$top" >/dev/null
+git -C "$top/solo" checkout -q -b mid
+out=$(hook prompt below "$top")
+expect_empty "a mid-reply prompt doesn't report repos below" "$out"
+hook stop below "$top"
+out=$(hook prompt below "$top")
+expect_empty "...nor does the next prompt, since it was Claude's work" "$out"
+hook stop below "$top"
+
+hook prompt inside "$top/solo" >/dev/null; hook stop inside "$top/solo"
+[ ! -e "$CLAUDE_PLUGIN_DATA/inside.repos" ] && ok "inside a repo, nothing below is scanned" \
+  || bad "inside a repo, nothing below is scanned" "$(cat "$CLAUDE_PLUGIN_DATA/inside.repos")"
+unset PROMPT_STAMP_REPO_DEPTH
+
 # --- tool hook ------------------------------------------------------------------
 
 out=$(hook tool notool "$repo")

@@ -39,6 +39,8 @@ Whenever a session starts, resumes, is cleared or is compacted, it adds a short 
 | `HEAD +N commits` / `moved back N commits` / `history rewritten` | How `HEAD` moved since Claude's last reply, with the last reflog entry (e.g. `pull: Fast-forward`) |
 | `working tree changed` | Files were edited, discarded or added since Claude's last reply, while `HEAD` stayed put |
 
+| `repos below changed` | Only with [`PROMPT_STAMP_REPO_DEPTH`](#several-repos-in-one-folder): git activity in the repos below the working directory, with the number of git actions and the latest one |
+
 Git parts are left out when the working directory is not a git repo.
 
 ## Install
@@ -66,11 +68,35 @@ The idle threshold is 15 minutes. Change it with an environment variable in `~/.
 }
 ```
 
+### Several repos in one folder
+
+If you run Claude in a folder that holds several repos but isn't one itself, such as `~/Projects`, the stamp normally has no git part. To have it report git activity in the repos below, set how many levels down to look, up to 3:
+
+```json
+{
+  "env": {
+    "PROMPT_STAMP_REPO_DEPTH": "2"
+  }
+}
+```
+
+With `2`, both `~/Projects/app` and `~/Projects/client/site` are watched. A commit, checkout, pull, reset or rebase in one of them since Claude's last reply prints a stamp:
+
+```
+[stamp] 2026-11-10 Tue 15:17 +0100 · idle 2h10m · repos below changed since your last reply: client/site (2 git actions, last: pull: Fast-forward)
+```
+
+- It's off by default, and does nothing when the working directory is inside a repo.
+- While it's unset, a session started in such a folder tells Claude about the setting and the depth that would fit, so Claude can suggest it once if you work across those repos. Set it to `0` to turn that off.
+- Uncommitted edits aren't noticed. It compares the size of each repo's `HEAD` reflog, which keeps it fast: about 0.3 seconds per prompt and per reply for 60 repos at depth 2.
+- It skips hidden folders, `node_modules`, and repos nested inside another repo.
+- It names at most 5 repos per stamp.
+
 ## How it works
 
 Four hooks run [`stamp.sh`](plugins/prompt-stamp/scripts/stamp.sh):
 
-- `SessionStart` prints the explanation for Claude.
+- `SessionStart` prints the explanation for Claude, plus the hint about [`PROMPT_STAMP_REPO_DEPTH`](#several-repos-in-one-folder) when it applies.
 - `Stop` records the time, branch, commit, upstream status and a checksum of the uncommitted changes when Claude finishes a reply. It prints nothing.
 - `UserPromptSubmit` compares against that record and prints the stamp when one of the conditions under [When it prints](#when-it-prints) is met. Whatever it prints is added to Claude's context for that prompt. It also marks a reply as running, until `Stop` clears it.
 - `PreToolUse` records when Claude was last seen working, so a long reply still counts as running. It prints nothing, runs no git, and does nothing between replies.
@@ -87,7 +113,7 @@ Design choices:
 
 `bash tests/run.sh` runs the tests, against throwaway repos and state.
 
-Nothing is sent anywhere except as part of your normal prompt to Claude. Note that this includes your branch name and the latest reflog entry, which can contain a commit message.
+Nothing is sent anywhere except as part of your normal prompt to Claude. Note that this includes your branch name and the latest reflog entry, which can contain a commit message. With `PROMPT_STAMP_REPO_DEPTH` set, it also includes the paths of the repos below that changed, and their latest reflog entries.
 
 ## Credit
 
