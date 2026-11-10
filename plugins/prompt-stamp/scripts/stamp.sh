@@ -105,8 +105,13 @@ case "$GAP_MIN" in ''|*[!0-9]*) GAP_MIN=15 ;; esac
 TURN_MIN=$(( GAP_MIN > 15 ? GAP_MIN : 15 ))
 # Opt-in: outside a repo, watch the repos up to this many levels below.
 REPO_DEPTH=${PROMPT_STAMP_REPO_DEPTH:-0}
-case "$REPO_DEPTH" in ''|*[!0-9]*) REPO_DEPTH=0 ;; esac
-[ "$REPO_DEPTH" -gt 3 ] && REPO_DEPTH=3   # deeper mostly walks source trees
+# Capped at 3: deeper mostly walks source trees. Matched as text, so a huge
+# number can't reach an arithmetic test.
+case "$REPO_DEPTH" in
+  [0-3]) ;;
+  ''|*[!0-9]*) REPO_DEPTH=0 ;;
+  *) REPO_DEPTH=3 ;;
+esac
 repos="$state.repos"
 cwd=$(json_get cwd)
 
