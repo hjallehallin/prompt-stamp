@@ -143,6 +143,9 @@ mkdir -p "$tmp/flat/one"; git init -q "$tmp/flat/one"
 out=$(hook start hint "$tmp/flat" '"source":"startup"')
 expect_has "with repos one level down only, it suggests 1" "$out" "has 1 repo up to 1 level(s) below"
 
+out=$(PROMPT_STAMP_REPO_DEPTH=99999999999999999999 hook prompt huge "$top" 2>&1)
+expect_lacks "a huge depth value prints no errors" "$out" "integer expression"
+
 hook prompt off "$top" >/dev/null; hook stop off "$top"
 work solo "while away"
 out=$(hook prompt off "$top")

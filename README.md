@@ -38,8 +38,7 @@ Whenever a session starts, resumes, is cleared or is compacted, it adds a short 
 | `branch changed` | A different branch is checked out now than at Claude's last reply |
 | `HEAD +N commits` / `moved back N commits` / `history rewritten` | How `HEAD` moved since Claude's last reply, with the last reflog entry (e.g. `pull: Fast-forward`) |
 | `working tree changed` | Files were edited, discarded or added since Claude's last reply, while `HEAD` stayed put |
-
-| `repos below changed` | Only with [`PROMPT_STAMP_REPO_DEPTH`](#several-repos-in-one-folder): git activity in the repos below the working directory, with the number of git actions and the latest one |
+| `repos below changed` | Only with [`PROMPT_STAMP_REPO_DEPTH`](#several-repos-in-one-folder): git activity in the repos below the working directory, with the number of reflog entries and the latest one |
 
 Git parts are left out when the working directory is not a git repo.
 
@@ -80,7 +79,7 @@ If you run Claude in a folder that holds several repos but isn't one itself, suc
 }
 ```
 
-With `2`, both `~/Projects/app` and `~/Projects/client/site` are watched. A commit, checkout, pull, reset or rebase in one of them since Claude's last reply prints a stamp:
+With `2`, both `~/Projects/app` and `~/Projects/client/site` are watched. A commit, checkout, pull, reset, rebase or stash in one of them since Claude's last reply prints a stamp:
 
 ```
 [stamp] 2026-11-10 Tue 15:17 +0100 · idle 2h10m · repos below changed since your last reply: client/site (2 git actions, last: pull: Fast-forward)
